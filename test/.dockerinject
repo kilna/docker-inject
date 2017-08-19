@@ -1,0 +1,9 @@
+test-docker-inject:
+  from:   .
+  to:     /workspace
+  pre:    rm -rf *
+  user:   nobody
+  group:  nobody
+  post:   chmod 777 bar
+  ignore: [ .dockerinject ]
+

@@ -1,0 +1,7 @@
+version: '3'
+services:
+  test-docker-inject:
+    build: .
+    image: testdockerinject:test
+    container_name: test-docker-inject
+    command: /bin/sh -c 'while true; do sleep 1; done'

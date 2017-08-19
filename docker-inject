@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+
+def usage():
+  print('''USAGE: docker-inject [options] [containers]
+
+Copies files into containers as per a .dockerinject JSON config file in the local
+directory.
+
+If containers are specified, only those containers are copied to, otherwise all
+containers in the config file are copied to.
+
+OPTIONS:
+--help       -h      : Shows this message
+--versbose   -v      : Shows extra information
+--file=FILE  -f FILE : Use a configuration file other than .dockerinject
+
+The .dockerignore file is used, if present, to exclude files from the copy. You
+can specify additional files to ignore using an "ignore" specification in the config.
+
+Example .dockerinject config file:
+''')
+
+import os
+import sys
+import getopt
+import subprocess
+import yaml
+import re
+
+options, containers = getopt.getopt( sys.argv[1:], 'fvh', ['file=', 'verbose', 'help'] )
+
+conf_file='.dockerinject'
+verbose=False
+for opt, arg in options:
+  if opt in ('-f', '--file'):
+    conf_file=arg
+  elif opt in ('-v', '--verbose'):
+    verbose=True
+  elif opt in ('-h', '--help'):
+    usage()
+    exit()
+  else:
+    raise ValueError('Unknown command line option '+opt)
+
+if os.path.isfile(conf_file):
+  try:
+    with open(conf_file, 'r') as yamlfile:
+     conf=yaml.load(yamlfile)
+  except Exception as err:
+    raise ValueError('Unable to read configuration file %s: %s' % (conf_file,str(err)))
+else:
+  raise ValueError('No docker-inject configuration file %s' % conf_file)
+
+dockerignore=[]
+if os.path.isfile('.dockerignore'):
+  try:
+    with open('.dockerignore') as f:
+      for entry in f:
+        if re.match(r'^(#.*|\s*)$', entry):
+          continue
+        if re.match(r'^!', entry):
+          raise Exception('Negated entries (ones beginning in !) not supported in .dockerignore with docker-inject')
+        dockerignore.append( re.sub(r'[\r\n]', '', entry) )
+  except Exception as err:
+    raise ValueError('Unable to read .dockerignore file: %s' % str(err))
+
+if len(containers) == 0:
+  containers=conf.keys()
+
+def shell_run(cmd, error=None):
+  if verbose:
+    print( '`' + ' '.join(cmd) + '`' );
+  try:
+    result=subprocess.check_output( cmd, shell=True )
+    if verbose:
+      print(result.decode('utf8'))
+  except Exception as err:
+    if error:
+      raise err
+    else:
+      raise ValueError( "%s: %s" % (error, str(err) ) )
+
+for container in containers:
+  if container not in containers:
+    raise ValueError('Specified container %s is not present in config file %s' % (container, conf_file) )
+  copy_specs=[]
+  if type(conf[container]) is list:
+    copy_specs=conf[container]
+  elif type(conf[container]) is dict:
+    copy_specs=[ conf[container] ]
+  for copy_spec in copy_specs:
+    if 'from' not in copy_spec:
+      raise ValueError("'from' not specified in copy specification for container %s" % container)
+    if 'to' not in copy_spec:
+      raise ValueError("'to' not specified in copy specification for container %s" % container)
+    ignore = dockerignore
+    if 'ignore' in copy_spec:
+      ignore += copy_spec['ignore']
+    copy_desc='%s into %s in container %s' % (copy_spec['from'], copy_spec['to'], container )
+    if verbose:
+      print('Copying %s' % copy_desc)
+    exclude_opts=[]
+    for exclude in ignore:
+      exclude_opts.append( '--exclude='+exclude )
+    tar_create  = [ 'tar', '-c' ] + exclude_opts + [ copy_spec['from'] ]
+    tar_extract = [ 'tar', '-x', '-C', copy_spec['to'], '-v' ]
+    user_opt = []
+    if 'user' in copy_spec:
+      user=copy_spec['user']
+      if 'group' in copy_spec:
+        user += ':' + copy_spec['group']
+      user_opt = [ '-u', user ]
+    docker_exec_user = [ 'docker', 'exec', '-i' ] + user_opt + [ container ]
+    docker_exec_root = [ 'docker', 'exec', '-i', '-p', container ]
+    shell_run(
+      tar_create + ['|'] + docker_exec_user + tar_extract,
+      error="Failed copying %s" % copy_desc
+    )
+
