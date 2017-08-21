@@ -1,4 +1,13 @@
 #!/usr/bin/env python
+# Unbuffer stdout since we can't pass the -u flag into python via /usr/bin/env in the shebang line
+import os
+import sys
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)
+
+import getopt
+import subprocess
+import yaml
+import re
 
 def usage():
   print('''USAGE: docker-inject [options] [containers]
@@ -19,13 +28,6 @@ can specify additional files to ignore using an "ignore" specification in the co
 
 Example .dockerinject config file:
 ''')
-
-import os
-import sys
-import getopt
-import subprocess
-import yaml
-import re
 
 options, containers = getopt.getopt( sys.argv[1:], 'fvh', ['file=', 'verbose', 'help'] )
 
@@ -67,9 +69,40 @@ if os.path.isfile('.dockerignore'):
 if len(containers) == 0:
   containers=conf.keys()
 
+def cmd_merge(*cmds, **opts):
+  as_string=False
+  if 'as_string' in opts:
+    as_string=opts['as_string']
+  # If any of the commands are strings, force output to a string
+  if any(type(cmd) is not list for cmd in cmds):
+    as_string=True
+  if as_string:
+    # Create a shell command in string format
+    out=''
+    for cmd in cmds:
+      if type(cmd) is list:
+        for arg in cmd:
+          if out != '':
+            out += ' '
+          if re.search(r'\s', arg) or arg == '':
+            out += "'" + re.sub(r"'", "'\''", arg) + "'"
+          else:
+            out += arg
+      else:
+        if out != '':
+          out += ' '
+        out += cmd
+    return out
+  else:
+    # Create a shell command in list format
+    out=[]
+    for cmd in cmds:
+      out += cmd
+    return out
+
 def shell_run(cmd, error=None):
   if verbose:
-    print( '`' + ' '.join(cmd) + '`' );
+    print('`'+cmd_merge(cmd, as_string=True)+'`')
   try:
     result=subprocess.check_output( cmd, shell=True )
     if verbose:
@@ -111,9 +144,23 @@ for container in containers:
         user += ':' + copy_spec['group']
       user_opt = [ '-u', user ]
     docker_exec_user = [ 'docker', 'exec', '-i' ] + user_opt + [ container ]
-    docker_exec_root = [ 'docker', 'exec', '-i', '-p', container ]
+    docker_exec_root = [ 'docker', 'exec', '-i', '--privileged', container ]
+    shell = ['sh', '-e']
+    if 'shell' in copy_spec:
+      shell = copy_spec['shell']
+    if verbose:
+      shell += [ '-x' ]
+    if 'pre_su' in copy_spec:
+      shell_run(
+        cmd_merge( [ 'echo', 'cd %s; %s' % (copy_spec['to'], copy_spec['pre_su'] ), '|'], docker_exec_root, shell ),
+        error="Failed running su pre shell '%s' before %s" % ( copy_spec['pre_su'], copy_desc )
+      )
+    if 'pre' in copy_spec:
+      shell_run(
+        cmd_merge( [ 'echo', 'cd %s; %s' % (copy_spec['to'], copy_spec['pre'] ), '|'], docker_exec_user, shell ),
+        error="Failed running pre shell '%s' before %s" % ( copy_spec['pre'], copy_desc )
+      )
     shell_run(
       tar_create + ['|'] + docker_exec_user + tar_extract,
       error="Failed copying %s" % copy_desc
     )
-
