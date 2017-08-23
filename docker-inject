@@ -122,21 +122,26 @@ for container in containers:
   elif type(conf[container]) is dict:
     copy_specs=[ conf[container] ]
   for copy_spec in copy_specs:
-    if 'from' not in copy_spec:
-      raise ValueError("'from' not specified in copy specification for container %s" % container)
-    if 'to' not in copy_spec:
+    from_path='.'
+    if 'from' in copy_spec:
+      from_path=copy_spec['from']
+    to_path=None
+    if 'to' in copy_spec:
+      to_path=copy_spec['to']
+    else:
       raise ValueError("'to' not specified in copy specification for container %s" % container)
     ignore = dockerignore
     if 'ignore' in copy_spec:
       ignore += copy_spec['ignore']
-    copy_desc='%s into %s in container %s' % (copy_spec['from'], copy_spec['to'], container )
+    copy_desc='%s into %s in container %s' % (from_path, to_path, container )
     if verbose:
       print('Copying %s' % copy_desc)
     exclude_opts=[]
     for exclude in ignore:
+      exclude = re.sub(r'/$', '', exclude)
       exclude_opts.append( '--exclude='+exclude )
-    tar_create  = [ 'tar', '-c' ] + exclude_opts + [ copy_spec['from'] ]
-    tar_extract = [ 'tar', '-x', '-C', copy_spec['to'], '-v' ]
+    tar_create  = [ 'tar', '-c' ] + exclude_opts + [ from_path ]
+    tar_extract = [ 'tar', '-x', '-C', to_path, '-v' ]
     user_opt = []
     if 'user' in copy_spec:
       user=copy_spec['user']
@@ -152,12 +157,12 @@ for container in containers:
       shell += [ '-x' ]
     if 'pre_su' in copy_spec:
       shell_run(
-        cmd_merge( [ 'echo', 'cd %s; %s' % (copy_spec['to'], copy_spec['pre_su'] ), '|'], docker_exec_root, shell ),
+        cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre_su'] ), '|'], docker_exec_root, shell ),
         error="Failed running su pre shell '%s' before %s" % ( copy_spec['pre_su'], copy_desc )
       )
     if 'pre' in copy_spec:
       shell_run(
-        cmd_merge( [ 'echo', 'cd %s; %s' % (copy_spec['to'], copy_spec['pre'] ), '|'], docker_exec_user, shell ),
+        cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre'] ), '|'], docker_exec_user, shell ),
         error="Failed running pre shell '%s' before %s" % ( copy_spec['pre'], copy_desc )
       )
     shell_run(
