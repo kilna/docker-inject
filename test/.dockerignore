@@ -1,5 +1,4 @@
-.*ignore
 .git*
-*docksync
-Dockerfile
-docker-compose.*
+.docker*
+#Dockerfile
+#docker-compose.*

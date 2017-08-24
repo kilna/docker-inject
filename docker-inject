@@ -1,16 +1,12 @@
 #!/usr/bin/env python
-# Unbuffer stdout since we can't pass the -u flag into python via /usr/bin/env in the shebang line
 import os
 import sys
-sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 0)
-
 import getopt
 import subprocess
 import yaml
 import re
 
-def usage():
-  print('''USAGE: docker-inject [options] [containers]
+def usage(): print('''USAGE: docker-inject [options] [containers]
 
 Copies files into containers as per a .dockerinject JSON config file in the local
 directory.
@@ -29,143 +25,185 @@ can specify additional files to ignore using an "ignore" specification in the co
 Example .dockerinject config file:
 ''')
 
-options, containers = getopt.getopt( sys.argv[1:], 'fvh', ['file=', 'verbose', 'help'] )
-
-conf_file='.dockerinject'
-verbose=False
-for opt, arg in options:
-  if opt in ('-f', '--file'):
-    conf_file=arg
-  elif opt in ('-v', '--verbose'):
-    verbose=True
-  elif opt in ('-h', '--help'):
-    usage()
-    exit()
+def load_conf_file(conf_file):
+  if os.path.isfile(conf_file):
+    try:
+      with open(conf_file, 'r') as yamlfile:
+       return yaml.load(yamlfile)
+    except Exception as err:
+      raise ValueError('Unable to read configuration file %s: %s' % (conf_file,str(err)))
   else:
-    raise ValueError('Unknown command line option '+opt)
+    raise ValueError('No docker-inject configuration file %s' % conf_file)
 
-if os.path.isfile(conf_file):
-  try:
-    with open(conf_file, 'r') as yamlfile:
-     conf=yaml.load(yamlfile)
-  except Exception as err:
-    raise ValueError('Unable to read configuration file %s: %s' % (conf_file,str(err)))
-else:
-  raise ValueError('No docker-inject configuration file %s' % conf_file)
+# For more info https://docs.docker.com/engine/reference/builder/#dockerignore-file
+def dockerglob_to_re(dockerglob):
+  rx=re.escape(dockerglob)
+  rx=re.sub( r'\\/',      '/',      rx ) # Remove leading slashes
+  rx=re.sub( r'/+$',      '/(.*)?', rx ) # Trailing slashes match dir or subs
+  rx=re.sub( r'\\\*\\\*', '.*',     rx ) # ** -> .*
+  rx=re.sub( r'^\.\*/',   '(.*/)?', rx ) # Leading ** -> (.*/)?
+  rx=re.sub( r'\\\*',     '[^/]*',  rx ) # * -> match many non-slash [^/]*
+  rx=re.sub( r'\\\?',     '[^/]',   rx ) # ? -> match one non-slash [^/]
+  # Docker glob brackets to regex brackets
+  def bracket_repl(m): return '['+re.sub(r'\\-','-',m.group(1))+']'
+  rx=re.sub( r'\\\[([^/]*?)\\\]', bracket_repl, rx )
+  # Docker glob negate !... -> regex negate (?!...)
+  if re.match( r'^\\!', rx ): rx=re.sub( r'^\\!', '(?!', rx ) + ')'
+  rx='^'+rx+'$' # Bind to beginning and end of string
+  #print( dockerglob+' -> '+rx )
+  return re.compile(rx)
 
-dockerignore=[]
-if os.path.isfile('.dockerignore'):
-  try:
-    with open('.dockerignore') as f:
-      for entry in f:
-        if re.match(r'^(#.*|\s*)$', entry):
-          continue
-        if re.match(r'^!', entry):
-          raise Exception('Negated entries (ones beginning in !) not supported in .dockerignore with docker-inject')
-        dockerignore.append( re.sub(r'[\r\n]', '', entry) )
-  except Exception as err:
-    raise ValueError('Unable to read .dockerignore file: %s' % str(err))
+def dockerignore_as_list_of_re():
+  dockerignore=[]
+  if os.path.isfile('.dockerignore'):
+    try:
+      with open('.dockerignore') as f:
+        for entry in f:
+          if re.match(r'^(#.*|\s*)$', entry): continue
+          dockerignore.append( dockerglob_to_re( re.sub(r'[\r\n]', '', entry) ) )
+    except Exception as err:
+      raise ValueError('Unable to read .dockerignore file: %s' % str(err))
+  return dockerignore
 
-if len(containers) == 0:
-  containers=conf.keys()
+def filter_paths(paths, ignore_regexes):
+  exclude={};
+  for path in paths:
+    for rx in ignore_regexes:
+      if re.match( r'^\\\^\\\(\\\?\\\!', str(rx) ):
+        for expath in exclude:
+          if re.match( rx, expath ):
+            del exclude[expath]
+      elif re.match(rx, path):
+        exclude[path]=None
+  filtered=[]
+  #for expath in exclude: print(' ! '+expath)
+  for path in paths:
+    if path in exclude: continue
+    filtered.append(path)
+  return filtered
 
 def cmd_merge(*cmds, **opts):
   as_string=False
-  if 'as_string' in opts:
-    as_string=opts['as_string']
+  if 'as_string' in opts: as_string=opts['as_string']
   # If any of the commands are strings, force output to a string
-  if any(type(cmd) is not list for cmd in cmds):
-    as_string=True
+  if any(type(cmd) is not list for cmd in cmds): as_string=True
   if as_string:
     # Create a shell command in string format
     out=''
     for cmd in cmds:
       if type(cmd) is list:
         for arg in cmd:
-          if out != '':
-            out += ' '
+          if out != '': out += ' '
           if re.search(r'\s', arg) or arg == '':
-            out += "'" + re.sub(r"'", "'\''", arg) + "'"
+            out += "'" + re.sub(r"'", "'\\''", arg) + "'"
           else:
             out += arg
       else:
-        if out != '':
-          out += ' '
+        if out != '': out += ' '
         out += cmd
     return out
   else:
     # Create a shell command in list format
     out=[]
-    for cmd in cmds:
-      out += cmd
+    for cmd in cmds: out += cmd
     return out
 
 def shell_run(cmd, error=None):
-  if verbose:
-    print('`'+cmd_merge(cmd, as_string=True)+'`')
+  if verbose: print('`'+cmd_merge(cmd, as_string=True)+'`')
   try:
     result=subprocess.check_output( cmd, shell=True )
-    if verbose:
-      print(result.decode('utf8'))
+    if verbose: print(result.decode('utf8'))
+    return result.decode('utf8')
   except Exception as err:
-    if error:
-      raise err
-    else:
-      raise ValueError( "%s: %s" % (error, str(err) ) )
+    if error: raise err
+    else: raise ValueError( "%s: %s" % (error, str(err) ) )
 
-for container in containers:
+def assert_container_is_valid(container, containers):
   if container not in containers:
     raise ValueError('Specified container %s is not present in config file %s' % (container, conf_file) )
-  copy_specs=[]
+  result=subprocess.check_output( ['docker','ps','-q','--filter','name='+container,'|','wc','-l'], shell=True )
+  if result.decode('ascii') != '1\n':
+    raise ValueError('Specified container %s does not appear to be running' % (container) )
+
+def process_copy_spec(container, copy_spec, dockerignore, verbose):
+  from_path='.'
+  if 'from' in copy_spec: from_path=copy_spec['from']
+  to_path=None
+  if 'to' in copy_spec:
+    to_path=copy_spec['to']
+  else:
+    raise ValueError("'to' not specified in copy specification for container %s" % container)
+  ignore = dockerignore
+  if 'ignore' in copy_spec:
+    for dockerglob in copy_spec['ignore']:
+      ignore.append(dockerglob_to_re(dockerglob))
+  copy_desc='%s into %s in container %s' % (from_path, to_path, container )
+  if verbose: print('Copying %s' % copy_desc)
+  paths=[]
+  def fixpath(p): return re.sub( r'^\.\/', '', re.sub( r'\\', '/', p ) )
+  from_path_rx=re.compile('^'+re.escape(fixpath(from_path))+'/')
+  for root, subdirs, files in os.walk(from_path):
+    def fixpathsub(p): return re.sub( from_path_rx, '', fixpath(p) )
+    if len(subdirs) == 0 and len(files) == 0: paths.append(fixpathsub(root)+'/')
+    for f in files:
+      if root == '.': paths.append(f)
+      else: paths.append(fixpathsub(root)+'/'+f)
+  #for p in paths: print(" - "+p)
+  paths = filter_paths(paths, ignore)
+  #for p in paths: print(" = "+p)
+  if len(paths) == 0:
+    raise Exception('No paths to inject in '+from_path+' after processing .dockerignore/.dockerinject')
+  tar_create  = [ 'tar', '-c' ] + paths
+  tar_extract = [ 'tar', '-x', '-C', to_path, '-v' ]
+  user_opt = []
+  if 'user' in copy_spec:
+    user=copy_spec['user']
+    if 'group' in copy_spec: user += ':' + copy_spec['group']
+    user_opt = [ '-u', user ]
+  docker_exec_user = [ 'docker', 'exec', '-i' ] + user_opt + [ container ]
+  docker_exec_root = [ 'docker', 'exec', '-i', '--privileged', container ]
+  shell = ['sh', '-e']
+  if 'shell' in copy_spec: shell = copy_spec['shell']
+  if verbose: shell += [ '-x' ]
+#  if 'pre_su' in copy_spec:
+#    shell_run(
+#      cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre_su'] ), '|'], docker_exec_root, shell ),
+#      error="Failed running su pre shell '%s' before %s" % ( copy_spec['pre_su'], copy_desc )
+#    )
+#  if 'pre' in copy_spec:
+#    shell_run(
+#      cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre'] ), '|'], docker_exec_user, shell ),
+#      error="Failed running pre shell '%s' before %s" % ( copy_spec['pre'], copy_desc )
+#    )
+  shell_run(
+    tar_create + ['|'] + docker_exec_user + tar_extract,
+    error="Failed copying %s" % copy_desc
+  )
+
+# End of functions
+
+options, containers = getopt.getopt( sys.argv[1:], 'fvh', ['file=', 'verbose', 'help'] )
+
+conf_file='.dockerinject'
+verbose=False
+
+for opt, arg in options:
+  if opt in ('-f', '--file'): conf_file=arg
+  elif opt in ('-v', '--verbose'): verbose=True
+  elif opt in ('-h', '--help'): usage(); exit()
+  else: raise ValueError('Unknown command line option '+opt)
+
+conf=load_conf_file(conf_file)
+dockerignore=dockerignore_as_list_of_re()
+
+if len(containers) == 0: containers=conf.keys()
+
+for container in containers:
+  assert_container_is_valid(container, containers)
   if type(conf[container]) is list:
-    copy_specs=conf[container]
+    for copy_spec in conf[container]:
+      process_copy_spec(container, copy_spec, dockerignore, verbose)
+    copy_specs = conf[container]
   elif type(conf[container]) is dict:
-    copy_specs=[ conf[container] ]
-  for copy_spec in copy_specs:
-    from_path='.'
-    if 'from' in copy_spec:
-      from_path=copy_spec['from']
-    to_path=None
-    if 'to' in copy_spec:
-      to_path=copy_spec['to']
-    else:
-      raise ValueError("'to' not specified in copy specification for container %s" % container)
-    ignore = dockerignore
-    if 'ignore' in copy_spec:
-      ignore += copy_spec['ignore']
-    copy_desc='%s into %s in container %s' % (from_path, to_path, container )
-    if verbose:
-      print('Copying %s' % copy_desc)
-    exclude_opts=[]
-    for exclude in ignore:
-      exclude = re.sub(r'/$', '', exclude)
-      exclude_opts.append( '--exclude='+exclude )
-    tar_create  = [ 'tar', '-c' ] + exclude_opts + [ from_path ]
-    tar_extract = [ 'tar', '-x', '-C', to_path, '-v' ]
-    user_opt = []
-    if 'user' in copy_spec:
-      user=copy_spec['user']
-      if 'group' in copy_spec:
-        user += ':' + copy_spec['group']
-      user_opt = [ '-u', user ]
-    docker_exec_user = [ 'docker', 'exec', '-i' ] + user_opt + [ container ]
-    docker_exec_root = [ 'docker', 'exec', '-i', '--privileged', container ]
-    shell = ['sh', '-e']
-    if 'shell' in copy_spec:
-      shell = copy_spec['shell']
-    if verbose:
-      shell += [ '-x' ]
-    if 'pre_su' in copy_spec:
-      shell_run(
-        cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre_su'] ), '|'], docker_exec_root, shell ),
-        error="Failed running su pre shell '%s' before %s" % ( copy_spec['pre_su'], copy_desc )
-      )
-    if 'pre' in copy_spec:
-      shell_run(
-        cmd_merge( [ 'echo', 'cd %s; %s' % (to_path, copy_spec['pre'] ), '|'], docker_exec_user, shell ),
-        error="Failed running pre shell '%s' before %s" % ( copy_spec['pre'], copy_desc )
-      )
-    shell_run(
-      tar_create + ['|'] + docker_exec_user + tar_extract,
-      error="Failed copying %s" % copy_desc
-    )
+    process_copy_spec(container, conf[container], dockerignore, verbose)
+
