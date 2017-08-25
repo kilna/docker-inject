@@ -1,8 +1,8 @@
 test-docker-inject:
-  to:     /workspace
-  pre_su: 'rm -rf *; chown -R nobody:nobody .'
-  user:   nobody
-  group:  nobody
+  dest:    /workspace
+  pre_su:  'rm -rf *; chown -R nobody:nobody .'
+  user:    nobody
+  group:   nobody
   post_su: chown -R nobody:nobody *
-  ignore: [ .dockerinject ]
+  ignore:  [ .dockerinject ]
 
