@@ -36,9 +36,10 @@ def dockerglob_to_re(dockerglob):
   # Docker glob brackets to regex brackets
   def bracket_repl(m): return '['+re.sub(r'\\-','-',m.group(1))+']'
   rx = re.sub( r'\\\[([^/]*?)\\\]', bracket_repl, rx )
-  # Docker glob negate !... -> regex negate (?!...)
-  if re.match( r'^\\!', rx ): rx = re.sub( r'^\\!', '(?!', rx ) + ')'
-  rx = '^'+rx+'$' # Bind to beginning and end of string
+  if rx[:2] == '\\!':
+    rx = '(?!^' + rx[2:] + '$)' # Negate, binding to ends of string
+  else:
+    rx = '^'+rx+'$' # Bind ends of string
   return re.compile(rx)
 
 def dockerignore_as_list_of_re():
@@ -57,11 +58,13 @@ def filter_paths( paths, regexes ):
   exclude={}
   for path in paths:
     for rx in regexes:
-      if re.match( r'^\\\^\\\(\\\?\\\!', str(rx) ):
+      if rx.pattern[:4] == '(?!^':
+        remove_exclude={}
         for expath in exclude:
-          if re.match( rx, expath ): del exclude[expath]
+          if not re.match( rx, expath ): remove_exclude[expath] = None
+        for x in remove_exclude: del exclude[x]
       elif re.match( rx, path ):
-        exclude[path]=None
+        exclude[path] = None
   return [ x for x in paths if x not in exclude ]
 
 def shell_escape( str ):
@@ -72,10 +75,7 @@ def shell_escape( str ):
 def cmd_string( cmd ):
   return ' '.join( map( lambda x: shell_escape(x), cmd ) )
 
-def docker_shell_run(
-  container, remote_cmd, user=None, group=None, input_pipe_cmd=None,
-  name='', cd=None, shell='sh', verbose=False
-):
+def docker_shell_run( container, remote_cmd, user=None, group=None, input_pipe_cmd=None, name='', cd=None, shell='sh', verbose=False ):
   docker_exec_cmd = [ 'docker', 'exec', '-i', '--privileged', container ]
   if user is not None:
     if group is not None: user += ':' + group

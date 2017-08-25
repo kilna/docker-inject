@@ -1,4 +1,7 @@
 .git*
 .docker*
-#Dockerfile
-#docker-compose.*
+Dockerfile
+docker-compose.*
+*exclude_me*
+!do_not_exclude_me
+
