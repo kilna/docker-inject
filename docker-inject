@@ -7,7 +7,7 @@ import argparse
 import yaml
 import re
 
-usage='''Copies files into containers as per a .dockerinject config.
+usage = '''Copies files into containers as per a .dockerinject config.
 If explicit containers are specified, only those containers are copied into,
 otherwise all containers in the config file are copied into. The
 .dockerignore file is used, if present, to exclude files source the copy.
@@ -26,19 +26,19 @@ def load_conf_file(conf_file):
 
 # For more info https://docs.docker.com/engine/reference/builder/#dockerignore-file
 def dockerglob_to_re(dockerglob):
-  rx=re.escape(dockerglob)
-  rx=re.sub( r'^\\.?\\/+', '',       rx ) # Remove leading / and ./
-  rx=re.sub( r'/+$',       '/(.*)?', rx ) # Trailing slashes match dir or subs
-  rx=re.sub( r'\\\*\\\*',  '.*',     rx ) # ** glob -> .* regex
-  rx=re.sub( r'^\.\*/',    '(.*/)?', rx ) # Leading ** glob -> (.*/)? regex
-  rx=re.sub( r'\\\*',      '[^/]*',  rx ) # * -> match many non-slash [^/]*
-  rx=re.sub( r'\\\?',      '[^/]',   rx ) # ? -> match one non-slash [^/]
+  rx = re.escape(dockerglob)
+  rx = re.sub( r'^\\.?\\/+', '',       rx ) # Remove leading / and ./
+  rx = re.sub( r'/+$',       '/(.*)?', rx ) # Trailing slashes match dir or subs
+  rx = re.sub( r'\\\*\\\*',  '.*',     rx ) # ** glob -> .* regex
+  rx = re.sub( r'^\.\*/',    '(.*/)?', rx ) # Leading ** glob -> (.*/)? regex
+  rx = re.sub( r'\\\*',      '[^/]*',  rx ) # * -> match many non-slash [^/]*
+  rx = re.sub( r'\\\?',      '[^/]',   rx ) # ? -> match one non-slash [^/]
   # Docker glob brackets to regex brackets
   def bracket_repl(m): return '['+re.sub(r'\\-','-',m.group(1))+']'
-  rx=re.sub( r'\\\[([^/]*?)\\\]', bracket_repl, rx )
+  rx = re.sub( r'\\\[([^/]*?)\\\]', bracket_repl, rx )
   # Docker glob negate !... -> regex negate (?!...)
-  if re.match( r'^\\!', rx ): rx=re.sub( r'^\\!', '(?!', rx ) + ')'
-  rx='^'+rx+'$' # Bind to beginning and end of string
+  if re.match( r'^\\!', rx ): rx = re.sub( r'^\\!', '(?!', rx ) + ')'
+  rx = '^'+rx+'$' # Bind to beginning and end of string
   return re.compile(rx)
 
 def dockerignore_as_list_of_re():
@@ -104,16 +104,16 @@ def get_source_paths( source, dockerignore, copy_ignore ):
   ignore = dockerignore
   for dockerglob in copy_ignore:
     ignore.append(dockerglob_to_re(dockerglob))
-  paths=[]
+  paths = []
   def fixpath(p): return re.sub( r'^\.\/', '', re.sub( r'\\', '/', p ) )
-  source_rx=re.compile('^'+re.escape(fixpath(source))+'/')
+  source_rx = re.compile( '^'+re.escape(fixpath(source))+'/' )
   for root, subdirs, files in os.walk(source):
     def fixpathsub(p): return re.sub( source_rx, '', fixpath(p) )
-    if len(subdirs) == 0 and len(files) == 0: paths.append(fixpathsub(root)+'/')
+    if len(subdirs) == 0 and len(files) == 0: paths.append( fixpathsub(root)+'/' )
     for f in files:
       if root == '.': paths.append(f)
-      else: paths.append(fixpathsub(root)+'/'+f)
-  return filter_paths(paths, ignore)
+      else: paths.append( fixpathsub(root)+'/'+f )
+  return filter_paths( paths, ignore )
 
 def process_copy( container, copy, dockerignore, verbose ):
   source = copy.get( 'source', '.'  )
@@ -141,17 +141,16 @@ def process_copy( container, copy, dockerignore, verbose ):
     docker_shell_run( container, copy['post_su'], name='post_su for '+desc, cd=dest, verbose=verbose )
 
 def process( conf_file, containers=[], verbose=False ):
-  conf=load_conf_file( conf_file )
-  dockerignore=dockerignore_as_list_of_re()
-  if len(containers)==0: containers=conf.keys()
+  conf = load_conf_file( conf_file )
+  dockerignore = dockerignore_as_list_of_re()
+  if len(containers) == 0: containers=conf.keys()
   for container in containers:
-    assert_container_is_valid(container, containers, conf_file)
+    assert_container_is_valid( container, containers, conf_file )
     if type(conf[container]) is list:
       for copy in conf[container]:
-        process_copy(container, copy, dockerignore, verbose)
-      copys = conf[container]
+        process_copy( container, copy, dockerignore, verbose )
     elif type(conf[container]) is dict:
-      process_copy(container, conf[container], dockerignore, verbose)
+      process_copy( container, conf[container], dockerignore, verbose )
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser( description=usage )
